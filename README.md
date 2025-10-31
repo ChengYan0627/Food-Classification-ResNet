@@ -1,1 +1,1 @@
-# ECE253-OCR
+# ECE253-food-classification
