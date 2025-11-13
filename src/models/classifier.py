@@ -1,5 +1,6 @@
 import os
 import torch
+import time
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoImageProcessor, SiglipForImageClassification
 from PIL import Image
@@ -95,6 +96,8 @@ class FoodClassifier:
         self.model.eval()
         all_preds, all_labels, all_paths = [], [], []
 
+        start_time = time.time()
+
         with torch.no_grad():
             for images, labels, paths in dataloader:
                 images = images.to(self.device)
@@ -107,6 +110,9 @@ class FoodClassifier:
                 all_preds.extend(preds.cpu().tolist())
                 all_labels.extend(labels.cpu().tolist())
                 all_paths.extend(paths)
+
+        end_time = time.time()
+        print(f"Predicted {len(dataset)} images in {end_time - start_time:.2f}s")
 
         return {"true_labels": all_labels, "pred_labels": all_preds, "image_paths": all_paths}
 
