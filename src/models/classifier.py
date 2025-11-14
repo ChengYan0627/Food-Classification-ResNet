@@ -9,12 +9,16 @@ from typing import Dict, Tuple
 class FoodClassifier:
     """Wrapper around SiglipForImageClassification for Food-101 dataset."""
 
-    def __init__(self):
+    def __init__(self, device = None):
         """
         Initialize model and processor.
         """
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device:
+            self.device = device
+        else:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            
         self.model_name = "prithivMLmods/Food-101-93M"
 
         # Load model and processor
