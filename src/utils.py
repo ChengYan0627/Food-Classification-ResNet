@@ -1,6 +1,7 @@
 import warnings
 import sklearn.exceptions
 import os
+import cv2
 from PIL import Image
 from sklearn.metrics import f1_score
 warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWarning)
@@ -25,11 +26,14 @@ def preprocess_folder(function: callable, input_dir: str, output_dir: str):
         input_path = os.path.join(input_dir, file_name)
         output_path = os.path.join(output_dir, file_name)
 
-        img = Image.open(input_path)
+        img = cv2.imread(input_path)
+        if img is None:
+            continue
+
         processed_img = function(img)
-        processed_img.save(output_path)
+        cv2.imwrite(output_path, processed_img)
 
         del img
-        del processed_img   
+        del processed_img
 
     return
