@@ -2,7 +2,6 @@ import warnings
 import sklearn.exceptions
 import os
 import cv2
-from PIL import Image
 from sklearn.metrics import f1_score
 warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWarning)
 
