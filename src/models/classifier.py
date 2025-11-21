@@ -154,6 +154,8 @@ class FoodImageDataset(Dataset):
                     self.images.append(os.path.join(data_dir, filename))
                     self.labels.append(self.label_to_id[label])
                     self.names.append(name)
+                else:
+                    print(f"Label '{label}' not found in label mapping.")
 
         print(f"Loaded {len(self.images)} images from {data_dir}")
     
