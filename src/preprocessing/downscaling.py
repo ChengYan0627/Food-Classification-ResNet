@@ -2,7 +2,6 @@ import os
 import sys
 import torch
 import numpy as np
-from PIL import Image
 import importlib.util
 import cv2 # Added for cv2.cvtColor
 from transformers import AutoImageProcessor # 新增導入 AutoImageProcessor
@@ -25,31 +24,31 @@ def _load_module_from_path(module_name: str, file_path: str):
     spec.loader.exec_module(module)
     return module
 
-# 載入 BaseModel (base.base_model)
+# 載入 BaseModel (base.base_model) for AIDN
 base_model_path = os.path.join(aidn_repo_path, 'base', 'base_model.py')
 base_module = _load_module_from_path("base.base_model", base_model_path)
 BaseModel = base_module.BaseModel
 
-# 載入 models.common
+# 載入 models.common for AIDN
 common_path = os.path.join(aidn_repo_path, 'models', 'common.py')
 common_module = _load_module_from_path("models.common", common_path)
 
-# 載入 models.arb
+# 載入 models.arb for AIDN
 arb_path = os.path.join(aidn_repo_path, 'models', 'arb.py')
 arb_module = _load_module_from_path("models.arb", arb_path)
 
-# 載入 models.lib.quantization
+# 載入 models.lib.quantization for AIDN
 quantization_path = os.path.join(aidn_repo_path, 'models', 'lib', 'quantization.py')
 quantization_module = _load_module_from_path("models.lib.quantization", quantization_path)
 Quantization = quantization_module.Quantization
 Quantization_RS = quantization_module.Quantization_RS
 
-# 載入 models.arbedrs (依賴於 models.common 和 models.arb)
+# 載入 models.arbedrs (依賴於 models.common 和 models.arb) for AIDN
 arbedrs_path = os.path.join(aidn_repo_path, 'models', 'arbedrs.py')
 arbedrs_module = _load_module_from_path("models.arbedrs", arbedrs_path)
 EDRS = arbedrs_module.EDRS
 
-# 載入 models.inv_arb_edrs (依賴於 base.base_model, models.arbedrs, models.lib.quantization)
+# 載入 models.inv_arb_edrs (依賴於 base.base_model, models.arbedrs, models.lib.quantization) for AIDN
 inv_arb_edrs_path = os.path.join(aidn_repo_path, 'models', 'inv_arb_edrs.py')
 inv_arb_edrs_module = _load_module_from_path("models.inv_arb_edrs", inv_arb_edrs_path)
 InvArbEDRS = inv_arb_edrs_module.InvArbEDRS
@@ -107,34 +106,37 @@ def _get_aidn_model(model_weights_path: str):
     return _aidn_model_instance
 
 def _preprocess_image(image_input):
-    # 處理輸入：優先檢查 numpy 陣列，然後是 PIL Image，最後是檔案路徑字串
+    # 處理輸入：優先檢查 numpy 陣列，然後是檔案路徑字串
     if isinstance(image_input, np.ndarray):
         # OpenCV 讀取的圖像通常是 BGR 格式，PIL 期望 RGB
-        img = Image.fromarray(cv2.cvtColor(image_input, cv2.COLOR_BGR2RGB))
-    elif isinstance(image_input, Image.Image):
-        img = image_input.convert('RGB')
+        img_np_rgb = cv2.cvtColor(image_input, cv2.COLOR_BGR2RGB)
+        img_size = (image_input.shape[1], image_input.shape[0]) # (width, height)
     elif isinstance(image_input, str):
-        img = Image.open(image_input).convert('RGB')
+        img_np_bgr = cv2.imread(image_input)
+        if img_np_bgr is None:
+            raise FileNotFoundError(f"Image not found at {image_input}")
+        img_np_rgb = cv2.cvtColor(img_np_bgr, cv2.COLOR_BGR2RGB)
+        img_size = (img_np_bgr.shape[1], img_np_bgr.shape[0]) # (width, height)
     else:
-        raise TypeError("Unsupported image_input type. Expected str (path), numpy.ndarray, or PIL.Image.")
+        raise TypeError("Unsupported image_input type. Expected str (path) or numpy.ndarray.")
 
-    img_np = np.array(img).astype(np.float32) / 255.0 # 歸一化到 [0, 1]
-    img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(torch.device('cpu')) # Also force input tensor to CPU
-    return img_tensor, img.size
+    img_np = img_np_rgb.astype(np.float32) / 255.0 # 歸一化到 [0, 1]
+    img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(torch.device('cpu'))
+    return img_tensor, img_size
 
 def _postprocess_image(img_tensor):
-    # 從 PyTorch Tensor 轉換回 PIL Image，然後再轉換為 OpenCV (BGR) NumPy 陣列
+    # 從 PyTorch Tensor 轉換回 OpenCV (BGR) NumPy 陣列
     img_tensor = img_tensor.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
     img_np_rgb = (img_tensor * 255.0).astype(np.uint8)
     img_np_bgr = cv2.cvtColor(img_np_rgb, cv2.COLOR_RGB2BGR) # 轉換為 BGR 格式給 OpenCV
     return img_np_bgr
 
-def downscale_with_aidn(image_input: (str, np.ndarray, Image.Image), target_size: tuple, model_weights_path: str):
+def downscale_with_aidn(image_input: (str, np.ndarray), target_size: tuple, model_weights_path: str):
     """
     使用 AIDN 模型將圖像下採樣到指定尺寸。
 
     Args:
-        image_input (str, numpy.ndarray, PIL.Image): 輸入圖像的路徑、numpy 陣列或 PIL Image 對象。
+        image_input (str, numpy.ndarray): 輸入圖像的路徑或 numpy 陣列。
         target_size (tuple): 目標尺寸，格式為 (寬度, 高度)。
         model_weights_path (str): AIDN 模型權重的路徑。
 
@@ -157,44 +159,32 @@ def downscale_with_aidn(image_input: (str, np.ndarray, Image.Image), target_size
     downscaled_image_np = _postprocess_image(lr_image_tensor)
     return downscaled_image_np
 
-def downscale_with_lanczos(image_input: (str, np.ndarray, Image.Image), target_size: tuple):
+def _downscale_lanczos_raw(image_input: (str, np.ndarray), target_size: tuple):
     """
     使用 Lanczos 插值將圖像下採樣到指定尺寸。
 
     Args:
-        image_input (str, numpy.ndarray, PIL.Image): 輸入圖像的路徑、numpy 陣列或 PIL Image 對象。
+        image_input (str, numpy.ndarray): 輸入圖像的路徑或 numpy 陣列。
         target_size (tuple): 目標尺寸，格式為 (寬度, 高度)。
 
     Returns:
         numpy.ndarray: 下採樣後的圖像 (OpenCV BGR 格式)。
     """
-    # 處理輸入：優先檢查 numpy 陣列，然後是 PIL Image，最後是檔案路徑字串
+    # 處理輸入：優先檢查 numpy 陣列，然後是檔案路徑字串
     if isinstance(image_input, np.ndarray):
-        img = Image.fromarray(cv2.cvtColor(image_input, cv2.COLOR_BGR2RGB))
-    elif isinstance(image_input, Image.Image):
-        img = image_input.convert('RGB')
+        img_np_bgr = image_input
     elif isinstance(image_input, str):
-        img = Image.open(image_input).convert('RGB')
+        img_np_bgr = cv2.imread(image_input)
+        if img_np_bgr is None:
+            raise FileNotFoundError(f"Image not found at {image_input}")
     else:
-        raise TypeError("Unsupported image_input type. Expected str (path), numpy.ndarray, or PIL.Image.")
+        raise TypeError("Unsupported image_input type. Expected str (path) or numpy.ndarray.")
 
-    # 使用 PIL 的 resize 函數和 LANCZOS 插值進行下採樣
-    # PIL.Image.resize 期望 (寬度, 高度)
-    downscaled_img_pil = img.resize(target_size, Image.Resampling.LANCZOS)
-
-    # 將 PIL Image 轉換回 OpenCV BGR NumPy 陣列
-    downscaled_img_np_rgb = np.array(downscaled_img_pil)
-    downscaled_img_np_bgr = cv2.cvtColor(downscaled_img_np_rgb, cv2.COLOR_RGB2BGR)
+    # 使用 OpenCV 的 resize 函數和 LANCZOS4 插值進行下採樣
+    downscaled_img_np_bgr = cv2.resize(img_np_bgr, target_size, interpolation=cv2.INTER_LANCZOS4)
     
     return downscaled_img_np_bgr
 
-def downscale_with_method3(image_path: str, target_size: tuple):
-    """
-    使用第三種方法將圖像下採樣到指定尺寸。
-    """
-    # 實現第三種下採樣方法的邏輯
-    # ...
-    pass
 
 # 新增圖像填充函數
 def pad_to_square_and_downscale_friendly(image_np: np.ndarray, target_base_dim: int = 224, fill_color=(0, 0, 0)) -> np.ndarray:
@@ -233,8 +223,124 @@ def pad_to_square_and_downscale_friendly(image_np: np.ndarray, target_base_dim: 
 
     return padded_image
 
+# 將圖像下採樣到 224x224 的 Lanczos 包裝函數
+def downscale_lanczos_224(image_input_np: np.ndarray) -> np.ndarray:
+    """
+    使用 Lanczos 插值將圖像填充為正方形並下採樣到 224x224。
+    Args:
+        image_input_np (numpy.ndarray): 輸入圖像 (OpenCV BGR 格式的 NumPy 陣列)。
+    Returns:
+        numpy.ndarray: 處理後的圖像 (OpenCV BGR 格式)。
+    """
+    padded_img_np = pad_to_square_and_downscale_friendly(image_input_np, target_base_dim=224)
+    return _downscale_lanczos_raw(padded_img_np, target_size=(224, 224))
+
+# MATLAB 引擎管理器，使用單例模式和上下文管理器
+class MatlabEngineManager:
+    _instance = None
+    _engine = None
+    _project_root = None # 儲存專案根目錄，只初始化一次
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(MatlabEngineManager, cls).__new__(cls)
+            # 在此處確定專案根目錄，只需一次
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            src_dir = os.path.join(current_dir, os.pardir)
+            cls._project_root = os.path.join(src_dir, os.pardir)
+        return cls._instance
+
+    def __enter__(self):
+        if self._engine is None:
+            print("Starting MATLAB engine...")
+            try:
+                self._engine = matlab.engine.start_matlab()
+                l0_downscaling_path = os.path.join(self._project_root, 'L-0 downscaling')
+                self._engine.addpath(l0_downscaling_path)
+                print(f"MATLAB engine started and L-0 downscaling path added: {l0_downscaling_path}")
+            except Exception as e:
+                print(f"Failed to start MATLAB engine or add path: {e}")
+                self._engine = None # 確保引擎狀態為 None
+                raise # 重新拋出異常
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._engine is not None:
+            print("Quitting MATLAB engine...")
+            try:
+                self._engine.quit()
+            except Exception as e:
+                print(f"Error quitting MATLAB engine: {e}")
+            finally:
+                self._engine = None
+    
+    def get_engine(self):
+        if self._engine is None:
+            raise RuntimeError("MATLAB engine is not running. Please use 'with MatlabEngineManager():' to manage the engine.")
+        return self._engine
+
+
+# 新增 L0 梯度最小化下採樣的工廠函數
+def get_l0_downscaler_224(lambda_val: float = 2e-4, kappa_val: float = 2):
+    """
+    返回一個 L0 梯度最小化下採樣函數的包裝器，該包裝器與 preprocess_folder 兼容。
+    Args:
+        lambda_val (float): L0 梯度最小化中的 lambda 參數。
+        kappa_val (float): L0 梯度最小化中的 kappa 參數。
+    Returns:
+        Callable[[numpy.ndarray], numpy.ndarray]: L0 下採樣函數。
+    """
+    def l0_downscale_wrapper(image_input_np: np.ndarray) -> np.ndarray:
+        # 獲取 MATLAB 引擎實例
+        manager = MatlabEngineManager()
+        eng = manager.get_engine()
+
+        current_img_np = image_input_np.copy()
+        current_height, current_width = current_img_np.shape[:2]
+        max_dim = max(current_height, current_width)
+        target_final_dim = 224
+
+        # Case 2: 長邊邊長超過 224 * 16 的情況
+        while max_dim > target_final_dim * 16:
+            print(f"L0 Pre-Downscaling (Coarse): Current max_dim {max_dim} > {target_final_dim * 16}. Applying L0 factor 4.")
+            downscale_factor_step = 4
+            
+            current_img_np = _downscale_l0_raw(current_img_np,
+                                                downscaling_factor=downscale_factor_step,
+                                                eng=eng,
+                                                lambda_val=lambda_val, kappa_val=kappa_val)
+            current_height, current_width = current_img_np.shape[:2]
+            max_dim = max(current_height, current_width)
+            print(f"L0 Pre-Downscaling Result: {current_width}x{current_height}")
+
+        # Case 1: 長邊邊長不超過 224 * 16，或已縮小到此範圍。
+        if max_dim > target_final_dim:
+            print(f"L0 Main Downscaling (Fine): Current max_dim {max_dim} > {target_final_dim}. Finding optimal L0 factor.")
+            
+            optimal_downscale_factor = 2
+            for f in range(2, 17):
+                if max_dim / f <= target_final_dim:
+                    optimal_downscale_factor = f
+                    break
+            
+            print(f"Optimal L0 factor found: {optimal_downscale_factor}.")
+            
+            current_img_np = _downscale_l0_raw(current_img_np,
+                                                downscaling_factor=optimal_downscale_factor,
+                                                eng=eng,
+                                                lambda_val=lambda_val, kappa_val=kappa_val)
+            current_height, current_width = current_img_np.shape[:2]
+            max_dim = max(current_height, current_width)
+            print(f"L0 Main Downscaling Result: {current_width}x{current_height}. (Should be <= {target_final_dim})")
+        
+        # 最終步驟：填充到 224x224
+        final_processed_img = pad_to_square_and_downscale_friendly(current_img_np, target_base_dim=target_final_dim)
+        
+        return final_processed_img
+    return l0_downscale_wrapper
+
 # 新增 L0 下採樣方法
-def downscale_with_l0(image_input: np.ndarray, downscaling_factor: int, eng, lambda_val: float = 2e-4, kappa_val: float = 2):
+def _downscale_l0_raw(image_input: np.ndarray, downscaling_factor: int, eng, lambda_val: float = 2e-4, kappa_val: float = 2):
     """
     使用 L0 梯度最小化下採樣算法將圖像下採樣。此函數執行單次下採樣。
 
