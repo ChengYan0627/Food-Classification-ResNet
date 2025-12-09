@@ -2,6 +2,7 @@ from matplotlib import pyplot as plt
 import os
 
 labels = {
+            -1: "unknown",
             0: "apple_pie", 1: "baby_back_ribs", 2: "baklava", 3: "beef_carpaccio", 4: "beef_tartare",
             5: "beet_salad", 6: "beignets", 7: "bibimbap", 8: "bread_pudding", 9: "breakfast_burrito",
             10: "bruschetta", 11: "caesar_salad", 12: "cannoli", 13: "caprese_salad", 14: "carrot_cake",
@@ -46,7 +47,7 @@ def wrong_predictions(results: dict, folder: str):
 
     wrong_indices = [i for i, (t, p) in enumerate(zip(true_labels, pred_labels)) if t != p]
     num_wrong = len(wrong_indices)
-    num_to_plot = min(num_wrong, 8)
+    num_to_plot = min(num_wrong, 16)
 
     if num_to_plot == 0:
         return
@@ -58,7 +59,7 @@ def wrong_predictions(results: dict, folder: str):
         image_path = os.path.join(folder, image_paths[idx])
         image = plt.imread(image_path)
 
-        plt.subplot(2, 4, i + 1)
+        plt.subplot(num_to_plot // 4 + 1, 4, i + 1)
         plt.imshow(image)
         plt.title(f"True: {labels[true_labels[idx]]}\nPredict: {labels[pred_labels[idx]]}")
         plt.axis('off')
