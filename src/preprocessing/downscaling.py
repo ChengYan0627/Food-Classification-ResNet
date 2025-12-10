@@ -1,163 +1,91 @@
 import os
 import sys
-import torch
-import numpy as np
-import importlib.util
-import cv2 # Added for cv2.cvtColor
-from transformers import AutoImageProcessor # 新增導入 AutoImageProcessor
-import matlab.engine # 導入 matlab.engine
-import tempfile # 用於創建臨時文件
-import math # 新增導入 math 模組
+import tempfile  # 用於創建臨時文件
+import subprocess  # 用於呼叫 DPID / SAID 等外部資源
 
-# AIDN 儲存庫的路徑
+import cv2  # OpenCV 影像處理 (BGR)
+import numpy as np
+import torch
+import torch.nn.functional as F
+import importlib.util
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(current_dir, os.pardir)
 project_root = os.path.join(src_dir, os.pardir)
-aidn_repo_path = os.path.join(project_root, 'AIDN_repo')
 
-# 動態載入 AIDN 相關模組
+# DPID 可執行檔路徑
+dpid_exe_path = os.path.join(project_root, "dpid", "dpid.exe")
 
-def _load_module_from_path(module_name: str, file_path: str):
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
+# SAID 相關路徑
+said_dir = os.path.join(project_root, "SAID")
+said_pretrained_dir = os.path.join(said_dir, "pretrained_models")
+
+_said_models_cache = {}
+_said_models_module = None
+
+
+def _load_said_models_module():
+    """
+    動態載入 SAID 專案中的 models.py，使其可在 src/ 中被使用，
+    而不需要把 SAID 變成 Python package。
+    """
+    global _said_models_module
+    if _said_models_module is not None:
+        return _said_models_module
+    # 確保 SAID 目錄在 sys.path 裡，讓 models.py 裡的 `from utils.utils` 可以找到 SAID/utils/utils.py
+    if said_dir not in sys.path:
+        sys.path.insert(0, said_dir)
+
+    models_path = os.path.join(said_dir, "models.py")
+    if not os.path.exists(models_path):
+        raise FileNotFoundError(f"SAID models.py not found at {models_path}")
+
+    spec = importlib.util.spec_from_file_location("said_models", models_path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module # 將模組添加到 sys.modules，以便內部導入能找到它
+    assert spec.loader is not None
     spec.loader.exec_module(module)
-    return module
+    _said_models_module = module
+    return _said_models_module
 
-# 載入 BaseModel (base.base_model) for AIDN
-base_model_path = os.path.join(aidn_repo_path, 'base', 'base_model.py')
-base_module = _load_module_from_path("base.base_model", base_model_path)
-BaseModel = base_module.BaseModel
 
-# 載入 models.common for AIDN
-common_path = os.path.join(aidn_repo_path, 'models', 'common.py')
-common_module = _load_module_from_path("models.common", common_path)
-
-# 載入 models.arb for AIDN
-arb_path = os.path.join(aidn_repo_path, 'models', 'arb.py')
-arb_module = _load_module_from_path("models.arb", arb_path)
-
-# 載入 models.lib.quantization for AIDN
-quantization_path = os.path.join(aidn_repo_path, 'models', 'lib', 'quantization.py')
-quantization_module = _load_module_from_path("models.lib.quantization", quantization_path)
-Quantization = quantization_module.Quantization
-Quantization_RS = quantization_module.Quantization_RS
-
-# 載入 models.arbedrs (依賴於 models.common 和 models.arb) for AIDN
-arbedrs_path = os.path.join(aidn_repo_path, 'models', 'arbedrs.py')
-arbedrs_module = _load_module_from_path("models.arbedrs", arbedrs_path)
-EDRS = arbedrs_module.EDRS
-
-# 載入 models.inv_arb_edrs (依賴於 base.base_model, models.arbedrs, models.lib.quantization) for AIDN
-inv_arb_edrs_path = os.path.join(aidn_repo_path, 'models', 'inv_arb_edrs.py')
-inv_arb_edrs_module = _load_module_from_path("models.inv_arb_edrs", inv_arb_edrs_path)
-InvArbEDRS = inv_arb_edrs_module.InvArbEDRS
-
-class AIDNConfig:
-    # 根據 AIDN_repo/config/DIV2K/AIDN.yaml 創建一個簡化的配置物件
-    def __init__(self):
-        self.arch = 'InvEDRS_arb'
-        self.up_sampler = 'sampleB'
-        self.down_sampler = 'sampleB'
-        self.n_resblocks = 16
-        self.n_feats = 64
-        self.fixed_scale = False
-        self.n_colors = 3
-        self.res_scale = 1
-        self.quantization = True
-        self.quantization_type = 'round_soft'
-        self.K = 4
-        self.num_experts_SAconv = 4
-        self.num_experts_CRM = 8
-        self.jpeg = False
-        self.rgb_range = 1.0
-        self.rescale = 'down' # 確保模型在初始化時知道是要下採樣
-
-# 載入 AIDN 模型和權重的實例
-_aidn_model_instance = None
-_aidn_model_weights_path = None
-
-def _get_aidn_model(model_weights_path: str):
-    global _aidn_model_instance, _aidn_model_weights_path
-
-    if _aidn_model_instance is None or _aidn_model_weights_path != model_weights_path:
-        # print(f"Initializing AIDN model with weights from {model_weights_path}") # Removed debug print
-        device = torch.device('cpu') # Changed from 'cuda' if available
-        cfg = AIDNConfig()
-        model = InvArbEDRS(cfg).to(device)
-
-        if model_weights_path:
-            # 載入模型權重
-            state_dict = torch.load(model_weights_path, map_location=device)['state_dict']
-
-            # 移除 state_dict 中的 'module.' 前綴
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                if k.startswith('module.'):
-                    new_state_dict[k[7:]] = v
-                else:
-                    new_state_dict[k] = v
-            model.load_state_dict(new_state_dict, strict=True)
-            # print("AIDN model weights loaded successfully.") # Removed debug print
-
-        model.eval()
-        _aidn_model_instance = model
-        _aidn_model_weights_path = model_weights_path
-    return _aidn_model_instance
-
-def _preprocess_image(image_input):
-    # 處理輸入：優先檢查 numpy 陣列，然後是檔案路徑字串
-    if isinstance(image_input, np.ndarray):
-        # OpenCV 讀取的圖像通常是 BGR 格式，PIL 期望 RGB
-        img_np_rgb = cv2.cvtColor(image_input, cv2.COLOR_BGR2RGB)
-        img_size = (image_input.shape[1], image_input.shape[0]) # (width, height)
-    elif isinstance(image_input, str):
-        img_np_bgr = cv2.imread(image_input)
-        if img_np_bgr is None:
-            raise FileNotFoundError(f"Image not found at {image_input}")
-        img_np_rgb = cv2.cvtColor(img_np_bgr, cv2.COLOR_BGR2RGB)
-        img_size = (img_np_bgr.shape[1], img_np_bgr.shape[0]) # (width, height)
-    else:
-        raise TypeError("Unsupported image_input type. Expected str (path) or numpy.ndarray.")
-
-    img_np = img_np_rgb.astype(np.float32) / 255.0 # 歸一化到 [0, 1]
-    img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(torch.device('cpu'))
-    return img_tensor, img_size
-
-def _postprocess_image(img_tensor):
-    # 從 PyTorch Tensor 轉換回 OpenCV (BGR) NumPy 陣列
-    img_tensor = img_tensor.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
-    img_np_rgb = (img_tensor * 255.0).astype(np.uint8)
-    img_np_bgr = cv2.cvtColor(img_np_rgb, cv2.COLOR_RGB2BGR) # 轉換為 BGR 格式給 OpenCV
-    return img_np_bgr
-
-def downscale_with_aidn(image_input: (str, np.ndarray), target_size: tuple, model_weights_path: str):
+def _get_said_model(model_name: str = "SAID_Bicubic", device: torch.device | None = None):
     """
-    使用 AIDN 模型將圖像下採樣到指定尺寸。
-
-    Args:
-        image_input (str, numpy.ndarray): 輸入圖像的路徑或 numpy 陣列。
-        target_size (tuple): 目標尺寸，格式為 (寬度, 高度)。
-        model_weights_path (str): AIDN 模型權重的路徑。
-
-    Returns:
-        numpy.ndarray: 下採樣後的圖像 (OpenCV BGR 格式)。
+    載入並快取 SAID 模型（SAID_Bicubic 或 SAID_Lanczos）。
     """
-    model = _get_aidn_model(model_weights_path)
-    
-    input_tensor, original_size = _preprocess_image(image_input)
-    original_width, original_height = original_size
-    target_width, target_height = target_size
+    global _said_models_cache
 
-    scale_width = original_width / target_width
-    scale_height = original_height / target_height
-    scale = (scale_width + scale_height) / 2.0
+    if device is None:
+        device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
-    with torch.no_grad():
-        lr_image_tensor, _ = model(input_tensor, scale=scale)
-    
-    downscaled_image_np = _postprocess_image(lr_image_tensor)
-    return downscaled_image_np
+    key = (model_name, str(device))
+    if key in _said_models_cache:
+        return _said_models_cache[key]
+
+    models_module = _load_said_models_module()
+    model_dict = {
+        "SAID_Bicubic": getattr(models_module, "SAID_Bicubic"),
+        "SAID_Lanczos": getattr(models_module, "SAID_Lanczos"),
+    }
+    if model_name not in model_dict:
+        raise ValueError(f"Unknown SAID model name: {model_name}")
+
+    ckpt_path = os.path.join(said_pretrained_dir, model_name + ".pth")
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(f"SAID checkpoint not found at {ckpt_path}")
+
+    print(f"[INFO] Loading SAID model '{model_name}' from {ckpt_path}")
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    if not isinstance(ckpt, dict) or "args" not in ckpt or "sd" not in ckpt:
+        raise ValueError("SAID checkpoint format not expected. Missing 'args' or 'sd' keys.")
+
+    ModelClass = model_dict[model_name]
+    model = ModelClass(**ckpt["args"])
+    model.load_state_dict(ckpt["sd"])
+    model.to(device)
+    model.eval()
+
+    _said_models_cache[key] = model
+    return model
 
 def _downscale_lanczos_raw(image_input: (str, np.ndarray), target_size: tuple):
     """
@@ -186,8 +114,12 @@ def _downscale_lanczos_raw(image_input: (str, np.ndarray), target_size: tuple):
     return downscaled_img_np_bgr
 
 
-# 新增圖像填充函數
-def pad_to_square_and_downscale_friendly(image_np: np.ndarray, target_base_dim: int = 224, fill_color=(0, 0, 0)) -> np.ndarray:
+# 新增圖像填充函數：先 padding 成正方形
+def pad_to_square_and_downscale_friendly(
+    image_np: np.ndarray,
+    target_base_dim: int = 224,
+    fill_color=(0, 0, 0),
+) -> np.ndarray:
     """
     將圖像填充為正方形，並使其邊長為 target_base_dim 的倍數，以便於後續的迭代下採樣。
 
@@ -200,14 +132,8 @@ def pad_to_square_and_downscale_friendly(image_np: np.ndarray, target_base_dim: 
         numpy.ndarray: 填充後的正方形圖像。
     """
     height, width = image_np.shape[:2]
-    max_dim = max(height, width)
-
-    # 計算新的正方形邊長，使其是 target_base_dim 的倍數且大於等於 max_dim
-    # 例如：如果 max_dim=500, target_base_dim=224
-    # math.ceil(500 / 224) = math.ceil(2.23) = 3
-    # padded_side = 3 * 224 = 672
-    target_mult = math.ceil(max_dim / target_base_dim)
-    padded_side = int(target_mult * target_base_dim)
+    # 這裡只確保圖像變成正方形，不再強制是 target_base_dim 的倍數
+    padded_side = max(height, width)
 
     # 計算填充後的圖像應該放在新圖像的哪個位置 (置中)
     pad_h = (padded_side - height) // 2
@@ -223,7 +149,7 @@ def pad_to_square_and_downscale_friendly(image_np: np.ndarray, target_base_dim: 
 
     return padded_image
 
-# 將圖像下採樣到 224x224 的 Lanczos 包裝函數
+# 方案 1：只有 Lanczos，下採樣到 224x224
 def downscale_lanczos_224(image_input_np: np.ndarray) -> np.ndarray:
     """
     使用 Lanczos 插值將圖像填充為正方形並下採樣到 224x224。
@@ -235,121 +161,15 @@ def downscale_lanczos_224(image_input_np: np.ndarray) -> np.ndarray:
     padded_img_np = pad_to_square_and_downscale_friendly(image_input_np, target_base_dim=224)
     return _downscale_lanczos_raw(padded_img_np, target_size=(224, 224))
 
-# MATLAB 引擎管理器，使用單例模式和上下文管理器
-class MatlabEngineManager:
-    _instance = None
-    _engine = None
-    _project_root = None # 儲存專案根目錄，只初始化一次
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(MatlabEngineManager, cls).__new__(cls)
-            # 在此處確定專案根目錄，只需一次
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            src_dir = os.path.join(current_dir, os.pardir)
-            cls._project_root = os.path.join(src_dir, os.pardir)
-        return cls._instance
-
-    def __enter__(self):
-        if self._engine is None:
-            print("Starting MATLAB engine...")
-            try:
-                self._engine = matlab.engine.start_matlab()
-                l0_downscaling_path = os.path.join(self._project_root, 'L-0 downscaling')
-                self._engine.addpath(l0_downscaling_path)
-                print(f"MATLAB engine started and L-0 downscaling path added: {l0_downscaling_path}")
-            except Exception as e:
-                print(f"Failed to start MATLAB engine or add path: {e}")
-                self._engine = None # 確保引擎狀態為 None
-                raise # 重新拋出異常
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._engine is not None:
-            print("Quitting MATLAB engine...")
-            try:
-                self._engine.quit()
-            except Exception as e:
-                print(f"Error quitting MATLAB engine: {e}")
-            finally:
-                self._engine = None
-    
-    def get_engine(self):
-        if self._engine is None:
-            raise RuntimeError("MATLAB engine is not running. Please use 'with MatlabEngineManager():' to manage the engine.")
-        return self._engine
-
-
-# 新增 L0 梯度最小化下採樣的工廠函數
-def get_l0_downscaler_224(lambda_val: float = 2e-4, kappa_val: float = 2):
+def _downscale_dpid_raw(image_input: np.ndarray, target_size: tuple, lambda_val: float = 1.0) -> np.ndarray:
     """
-    返回一個 L0 梯度最小化下採樣函數的包裝器，該包裝器與 preprocess_folder 兼容。
-    Args:
-        lambda_val (float): L0 梯度最小化中的 lambda 參數。
-        kappa_val (float): L0 梯度最小化中的 kappa 參數。
-    Returns:
-        Callable[[numpy.ndarray], numpy.ndarray]: L0 下採樣函數。
-    """
-    def l0_downscale_wrapper(image_input_np: np.ndarray) -> np.ndarray:
-        # 獲取 MATLAB 引擎實例
-        manager = MatlabEngineManager()
-        eng = manager.get_engine()
-
-        current_img_np = image_input_np.copy()
-        current_height, current_width = current_img_np.shape[:2]
-        max_dim = max(current_height, current_width)
-        target_final_dim = 224
-
-        # Case 2: 長邊邊長超過 224 * 16 的情況
-        while max_dim > target_final_dim * 16:
-            print(f"L0 Pre-Downscaling (Coarse): Current max_dim {max_dim} > {target_final_dim * 16}. Applying L0 factor 4.")
-            downscale_factor_step = 4
-            
-            current_img_np = _downscale_l0_raw(current_img_np,
-                                                downscaling_factor=downscale_factor_step,
-                                                eng=eng,
-                                                lambda_val=lambda_val, kappa_val=kappa_val)
-            current_height, current_width = current_img_np.shape[:2]
-            max_dim = max(current_height, current_width)
-            print(f"L0 Pre-Downscaling Result: {current_width}x{current_height}")
-
-        # Case 1: 長邊邊長不超過 224 * 16，或已縮小到此範圍。
-        if max_dim > target_final_dim:
-            print(f"L0 Main Downscaling (Fine): Current max_dim {max_dim} > {target_final_dim}. Finding optimal L0 factor.")
-            
-            optimal_downscale_factor = 2
-            for f in range(2, 17):
-                if max_dim / f <= target_final_dim:
-                    optimal_downscale_factor = f
-                    break
-            
-            print(f"Optimal L0 factor found: {optimal_downscale_factor}.")
-            
-            current_img_np = _downscale_l0_raw(current_img_np,
-                                                downscaling_factor=optimal_downscale_factor,
-                                                eng=eng,
-                                                lambda_val=lambda_val, kappa_val=kappa_val)
-            current_height, current_width = current_img_np.shape[:2]
-            max_dim = max(current_height, current_width)
-            print(f"L0 Main Downscaling Result: {current_width}x{current_height}. (Should be <= {target_final_dim})")
-        
-        # 最終步驟：填充到 224x224
-        final_processed_img = pad_to_square_and_downscale_friendly(current_img_np, target_base_dim=target_final_dim)
-        
-        return final_processed_img
-    return l0_downscale_wrapper
-
-# 新增 L0 下採樣方法
-def _downscale_l0_raw(image_input: np.ndarray, downscaling_factor: int, eng, lambda_val: float = 2e-4, kappa_val: float = 2):
-    """
-    使用 L0 梯度最小化下採樣算法將圖像下採樣。此函數執行單次下採樣。
+    使用 DPID 演算法（透過 dpid.exe）將圖像下採樣到指定尺寸。
 
     Args:
         image_input (numpy.ndarray): 輸入圖像 (OpenCV BGR 格式的 NumPy 陣列)。
-        downscaling_factor (int): L0 下採樣的因子 (介於 2 到 16 之間)。
-        eng: 已啟動的 MATLAB 引擎實例。
-        lambda_val (float): L0 梯度最小化中的 lambda 參數。
-        kappa_val (float): L0 梯度最小化中的 kappa 參數。
+        target_size (tuple): 目標尺寸，格式為 (寬度, 高度)。
+        lambda_val (float): DPID 參數 lambda。
 
     Returns:
         numpy.ndarray: 下採樣後的圖像 (OpenCV BGR 格式)。
@@ -362,44 +182,200 @@ def _downscale_l0_raw(image_input: np.ndarray, downscaling_factor: int, eng, lam
         if not isinstance(image_input, np.ndarray):
             raise TypeError("Input image_input must be a numpy.ndarray.")
 
-        current_img_np = image_input.copy() # 使用副本，避免修改原始輸入
-        current_height, current_width = current_img_np.shape[:2]
+        if not os.path.exists(dpid_exe_path):
+            raise FileNotFoundError(f"DPID executable not found at {dpid_exe_path}")
 
-        downscaling_factor_step = downscaling_factor # 直接使用傳入的因子
-        
-        if downscaling_factor_step < 2:
-            print(f"L0 Downscaling: Skipping L0 step as factor {downscaling_factor_step} is less than 2.")
-            return image_input
-        
-        # 確保下採樣因子在 MATLAB 函數的推薦範圍 (2-16) 內
-        downscaling_factor_step = int(min(downscaling_factor_step, 16.0))
-        downscaling_factor_step = max(downscaling_factor_step, 2)
-
-        # print(f"L0 Downscaling Step: Current size {current_width}x{current_height}. Applying factor {downscaling_factor_step}")
-
+        # 建立暫存輸入檔案
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_input_file:
             temp_input_path = temp_input_file.name
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_output_file:
-            temp_output_path = temp_output_file.name
 
-        cv2.imwrite(temp_input_path, current_img_np)
+        cv2.imwrite(temp_input_path, image_input)
 
-        # 呼叫 MATLAB 函數進行一步下採樣
-        eng.l0_downscale_auto(temp_input_path, float(downscaling_factor_step), temp_output_path, float(lambda_val), float(kappa_val), nargout=0)
+        work_dir = os.path.dirname(temp_input_path)
+        base_name = os.path.basename(temp_input_path)
 
-        # 讀取 MATLAB 處理後的圖像
+        out_w, out_h = target_size
+        # 需與 Go 版本 main.go 的命名規則一致：strconv.FormatFloat(_lambda, 'f', -1, 32)
+        # Python 對應行為可用 '%g'，例如 1.0 -> '1', 0.5 -> '0.5'
+        lambda_str = ("%g" % float(lambda_val))
+
+        # 呼叫 dpid.exe
+        cmd = [
+            dpid_exe_path,
+            temp_input_path,
+            str(out_w),
+            str(out_h),
+            lambda_str,
+        ]
+
+        subprocess.run(cmd, check=True, cwd=work_dir)
+
+        # 根據 dpid.py 的命名規則組合輸出檔名：filename_wxh_lambda.png
+        output_filename = f"{base_name}_{out_w}x{out_h}_{lambda_str}.png"
+        temp_output_path = os.path.join(work_dir, output_filename)
+
         processed_img_np = cv2.imread(temp_output_path)
         if processed_img_np is None:
-            raise IOError(f"Could not read processed image from {temp_output_path} after L0 step with factor {downscaling_factor_step}. Input was {temp_input_path}")
-        
+            raise IOError(f"Could not read processed image from {temp_output_path}")
+
     except Exception as e:
-        print(f"Error during L0 downscaling: {e}")
-        processed_img_np = image_input # 在出錯時返回原始圖像
+        print(f"Error during DPID downscaling: {e}")
+        processed_img_np = image_input  # 發生錯誤時回傳原圖
     finally:
-        # 清理任何剩餘的臨時文件
+        # 清理暫存檔
         if temp_input_path and os.path.exists(temp_input_path):
             os.remove(temp_input_path)
         if temp_output_path and os.path.exists(temp_output_path):
             os.remove(temp_output_path)
-    
+
     return processed_img_np
+
+
+def downscale_dpid_224(image_input_np: np.ndarray, lambda_val: float = 1.0) -> np.ndarray:
+    """
+    使用 DPID 演算法：先 padding 成正方形，再下採樣到 224x224。
+
+    Args:
+        image_input_np (numpy.ndarray): 輸入圖像 (OpenCV BGR 格式的 NumPy 陣列)。
+        lambda_val (float): DPID 參數 lambda。
+
+    Returns:
+        numpy.ndarray: 處理後的 224x224 圖像 (OpenCV BGR 格式)。
+    """
+    # 先填充成正方形，方便後續 224x224 下採樣
+    padded_img_np = pad_to_square_and_downscale_friendly(image_input_np, target_base_dim=224)
+    return _downscale_dpid_raw(padded_img_np, target_size=(224, 224), lambda_val=lambda_val)
+def _downscale_said_from_rgb_square(
+    image_rgb: np.ndarray,
+    scale: float,
+    target_size: int = 224,
+    model_name: str = "SAID_Lanczos",
+) -> np.ndarray:
+    """
+    使用 SAID 演算法，給定一張「已是正方形」的 RGB 影像，
+    先按照固定倍率 scale 生出 LR，再 Bicubic resize 到 target_size x target_size。
+    回傳值為 [0,1] 的 float32 RGB 影像。
+    """
+    if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
+        raise ValueError("image_rgb must be an HxWx3 RGB image.")
+
+    h, w, _ = image_rgb.shape
+    if h != w:
+        raise ValueError("image_rgb must be square for SAID processing.")
+
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    model = _get_said_model(model_name=model_name, device=device)
+
+    img = image_rgb.astype(np.float32) / 255.0
+    x = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(device)  # 1,C,H,W
+
+    gt_size = [h, w]
+    lr_size = [int(gt_size[0] / scale), int(gt_size[1] / scale)]
+
+    with torch.no_grad():
+        lr, _ = model(x, lr_size, gt_size)  # 1,C,H_lr,W_lr
+        lr = lr.clamp(0.0, 1.0)
+        lr_resized = F.interpolate(
+            lr,
+            size=(target_size, target_size),
+            mode="bicubic",
+            align_corners=False,
+        )
+
+    lr_resized = lr_resized.cpu().squeeze(0).permute(1, 2, 0).numpy()  # H,W,C, 0~1
+    return lr_resized
+
+
+# 方案 2：先用 Lanczos 降到 448 或 896，再用 SAID(Lanczos) 降 2x / 4x 到 224x224。
+# 為了讓 SAID 在邊界看到較自然的內容，我們對 SAID 使用「鏡射 padding」，
+# 但在最終 224x224 輸出上，會把對應於 padding 的區域重新設為黑色。
+def downscale_lanczos_said_224(
+    image_input_np: np.ndarray,
+    said_model_name: str = "SAID_Lanczos",
+) -> np.ndarray:
+    """
+    Pipeline:
+    1. 以鏡射方式將輸入圖像 padding 成正方形（給 SAID 使用，邊界較自然）
+    2. 如果正方形邊長 < 896：用 Lanczos 降到 448x448，再讓 SAID 以 scale=2 做 224x224
+       否則：用 Lanczos 降到 896x896，再讓 SAID 以 scale=4 做 224x224
+    3. 在最終 224x224 輸出上，把對應於「padding 區域」的像素設為黑色，保留原始內容區域
+
+    回傳值：
+        224x224 的 BGR 影像（uint8），中央為 SAID 輸出，外圈為黑色 padding。
+    """
+    # 原圖尺寸
+    orig_h, orig_w = image_input_np.shape[:2]
+    side = max(orig_h, orig_w)
+
+    # 計算置中的 padding（上下左右）
+    pad_top = (side - orig_h) // 2
+    pad_bottom = side - orig_h - pad_top
+    pad_left = (side - orig_w) // 2
+    pad_right = side - orig_w - pad_left
+
+    # 1) 以鏡射方式 padding 成正方形（給 SAID 使用）
+    padded_bgr = cv2.copyMakeBorder(
+        image_input_np,
+        pad_top,
+        pad_bottom,
+        pad_left,
+        pad_right,
+        borderType=cv2.BORDER_REFLECT_101,
+    )
+
+    # 2) 決定中間尺寸與 SAID 的 scale
+    if side < 896:
+        intermediate_side = 448
+        said_scale = 2.0
+    else:
+        intermediate_side = 896
+        said_scale = 4.0
+
+    # 3) 將 BGR 轉成 RGB，再用 Lanczos resize 到中間尺寸
+    padded_rgb = cv2.cvtColor(padded_bgr, cv2.COLOR_BGR2RGB)
+    inter_rgb = cv2.resize(
+        padded_rgb,
+        (intermediate_side, intermediate_side),
+        interpolation=cv2.INTER_LANCZOS4,
+    )
+
+    # 4) 丟給 SAID 做 scale=2 或 4 的 downscaling，再 Bicubic 到 224x224
+    try:
+        said_out_rgb = _downscale_said_from_rgb_square(
+            inter_rgb,
+            scale=said_scale,
+            target_size=224,
+            model_name=said_model_name,
+        )
+        # 5) 轉回 BGR + uint8
+        said_out_rgb = (said_out_rgb * 255.0).clip(0, 255).astype(np.uint8)
+        said_out_bgr = cv2.cvtColor(said_out_rgb, cv2.COLOR_RGB2BGR)
+
+        # 6) 根據原始 padding 位置，在 224x224 上估計對應區域，將其設為黑色
+        final_size = 224
+        scale_to_final = final_size / float(side)
+
+        y_start = int(round(pad_top * scale_to_final))
+        y_end = int(round((pad_top + orig_h) * scale_to_final))
+        x_start = int(round(pad_left * scale_to_final))
+        x_end = int(round((pad_left + orig_w) * scale_to_final))
+
+        # 邊界保護
+        y_start = max(0, min(final_size, y_start))
+        y_end = max(0, min(final_size, y_end))
+        x_start = max(0, min(final_size, x_start))
+        x_end = max(0, min(final_size, x_end))
+
+        # 建立 mask：1 表示原始內容區域，0 表示 padding 區域
+        mask = np.zeros((final_size, final_size), dtype=np.uint8)
+        if y_end > y_start and x_end > x_start:
+            mask[y_start:y_end, x_start:x_end] = 1
+
+        # 將 padding 區域設為黑色（BGR = 0）
+        said_out_bgr[mask == 0] = 0
+
+        return said_out_bgr
+    except Exception as e:
+        # 若 SAID 失敗，退回純 Lanczos 結果，至少流程不會中斷
+        print(f"[WARN] SAID downscaling failed ({e}), falling back to pure Lanczos.")
+        return _downscale_lanczos_raw(padded_bgr, target_size=(224, 224))
