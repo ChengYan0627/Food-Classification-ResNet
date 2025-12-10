@@ -150,7 +150,7 @@ def pad_to_square_and_downscale_friendly(
     return padded_image
 
 # 方案 1：只有 Lanczos，下採樣到 224x224
-def downscale_lanczos_224(image_input_np: np.ndarray) -> np.ndarray:
+def Lanczos(image_input_np: np.ndarray) -> np.ndarray:
     """
     使用 Lanczos 插值將圖像填充為正方形並下採樣到 224x224。
     Args:
@@ -231,7 +231,7 @@ def _downscale_dpid_raw(image_input: np.ndarray, target_size: tuple, lambda_val:
     return processed_img_np
 
 
-def downscale_dpid_224(image_input_np: np.ndarray, lambda_val: float = 1.0) -> np.ndarray:
+def DPID(image_input_np: np.ndarray, lambda_val: float = 1.0) -> np.ndarray:
     """
     使用 DPID 演算法：先 padding 成正方形，再下採樣到 224x224。
 
@@ -289,7 +289,7 @@ def _downscale_said_from_rgb_square(
 # 方案 2：先用 Lanczos 降到 448 或 896，再用 SAID(Lanczos) 降 2x / 4x 到 224x224。
 # 為了讓 SAID 在邊界看到較自然的內容，我們對 SAID 使用「鏡射 padding」，
 # 但在最終 224x224 輸出上，會把對應於 padding 的區域重新設為黑色。
-def downscale_lanczos_said_224(
+def Lanczos_SAID(
     image_input_np: np.ndarray,
     said_model_name: str = "SAID_Lanczos",
 ) -> np.ndarray:
