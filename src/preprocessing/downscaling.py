@@ -267,20 +267,23 @@ def _downscale_said_from_rgb_square(
     model = _get_said_model(model_name=model_name, device=device)
 
     img = image_rgb.astype(np.float32) / 255.0
-    x = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(device)  # 1,C,H,W
+    x = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(device, non_blocking=True)  # 1,C,H,W
 
     gt_size = [h, w]
     lr_size = [int(gt_size[0] / scale), int(gt_size[1] / scale)]
 
-    with torch.no_grad():
-        lr, _ = model(x, lr_size, gt_size)  # 1,C,H_lr,W_lr
-        lr = lr.clamp(0.0, 1.0)
-        lr_resized = F.interpolate(
-            lr,
-            size=(target_size, target_size),
-            mode="bicubic",
-            align_corners=False,
-        )
+    # 使用 inference_mode + AMP（在 CUDA 上啟用混合精度）加速推論
+    amp_enabled = device.type == "cuda"
+    with torch.inference_mode():
+        with torch.cuda.amp.autocast(enabled=amp_enabled, dtype=torch.float16):
+            lr, _ = model(x, lr_size, gt_size)  # 1,C,H_lr,W_lr
+            lr = lr.clamp(0.0, 1.0)
+            lr_resized = F.interpolate(
+                lr,
+                size=(target_size, target_size),
+                mode="bicubic",
+                align_corners=False,
+            )
 
     lr_resized = lr_resized.cpu().squeeze(0).permute(1, 2, 0).numpy()  # H,W,C, 0~1
     return lr_resized
