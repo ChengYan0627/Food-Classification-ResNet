@@ -19,7 +19,11 @@ def preprocess_folder(function: callable, input_dir: str, output_dir: str):
 
     for file_name in os.listdir(input_dir):
         input_path = os.path.join(input_dir, file_name)
-        output_path = os.path.join(output_dir, file_name)
+
+        # 統一輸出為 PNG，避免重複 JPEG 壓縮造成細節流失／壓縮雜訊累積
+        stem, _ = os.path.splitext(file_name)
+        output_file_name = stem + ".png"
+        output_path = os.path.join(output_dir, output_file_name)
 
         img = cv2.imread(input_path)
         if img is None:
