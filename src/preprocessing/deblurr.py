@@ -31,8 +31,11 @@ def usm(image, kernel_size=(15, 15), sigma=1.0, amount=5.0):
     """
 
     # 1. 產生模糊版本
-    blurred = cv2.GaussianBlur(image, kernel_size, sigma)
-    
+    try:
+        blurred = cv2.GaussianBlur(image, kernel_size, sigma)
+    except Exception as e:
+        print("f")
+        return image  # 若模糊失敗，回傳原圖
     # 2. 計算 USM (使用 addWeighted 高效疊加)
     # src1 * alpha + src2 * beta + gamma
     # image * (1 + amount) + blurred * (-amount)
@@ -40,7 +43,7 @@ def usm(image, kernel_size=(15, 15), sigma=1.0, amount=5.0):
     
     return enhanced_image
 
-def swf(image, kernel_size=(15, 15)):
+def swf(image, kernel_size=(50, 50)):
     """
     Algorithm 3: Simplified Wiener Filter (Robust Implementation)
     手動實作版本，解決 scipy 除以零的警告問題。
