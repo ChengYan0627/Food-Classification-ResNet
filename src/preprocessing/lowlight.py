@@ -1,10 +1,23 @@
 import numpy as np
 import cv2
 
+def low_light_check(image, threshold=60):
+    """
+    Check if an image is considered low-light based on average brightness.
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Calculate average brightness
+    avg_brightness = np.mean(gray)
+    return avg_brightness < threshold
+
 def gamma(image, gamma=1.5):
     """
     Apply gamma correction to enhance low-light images.
     """
+
+    if low_light_check(image) == False:
+        return image
 
     inv_gamma = 1.0 / gamma
     table = ((np.arange(256) / 255.0) ** inv_gamma) * 255
@@ -19,6 +32,9 @@ def CLAHE(image, clip_limit=2.0, tile_grid_size=(8, 8)):
     
     Source: https://stackoverflow.com/questions/25008458/how-to-apply-clahe-on-rgb-color-images
     """
+
+    if low_light_check(image) == False:
+        return image
 
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
@@ -37,6 +53,9 @@ def SSRetinex(image, sigma=30):
     
     Source: https://github.com/AKRISH22/Retinex-Image-Enhancement
     """
+
+    if low_light_check(image) == False:
+        return image
 
     img = image.astype(np.float32) + 1.0
 

@@ -18,10 +18,11 @@ This project implements an image classification pipeline focused on food images 
 │  │ 
 │  ├─ preprocessing
 │  │  ├─ deblurr.py          # Deblurr algorithms
-│  │  └─ lowlight.py         # lowlight-enhancement algorithms
+│  │  └─ lowlight.py         # Lowlight-enhancement algorithms
+│  │  └─ downscaling.py      # Downscaling algorithms
 │  │
 │  ├─ plot.py                # Plotting helper function
-│  └─ utils.py               # Useful functions for calculating metrics and preprocessing
+│  └─ project_utils.py       # Useful functions for calculating metrics and preprocessing
 │
 ├─ project.ipynb             # Notebook with experiments
 │  proposal.pdf              # Project proposal
