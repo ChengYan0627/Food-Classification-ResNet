@@ -4,8 +4,6 @@ from torch.utils.data import DataLoader, Subset
 from transformers import get_linear_schedule_with_warmup
 import random
 
-random.seed(42)
-
 def fine_tune(
     model_wrapper,
     data_dir,
@@ -53,6 +51,7 @@ def fine_tune(
 
     # Main training loop
     correct, total = 0, 0
+    training_history = {"loss": [], "train_acc": [], "val_acc": []}
     for epoch in range(epochs):
         running_loss = 0.0
 
@@ -73,11 +72,15 @@ def fine_tune(
             scheduler.step()
 
             running_loss += loss.item()
+            accuracy = correct / total
 
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {running_loss / len(train_loader):.4f} - Accuracy: {correct / total:.4f}")
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {running_loss / len(train_loader):.4f} - Accuracy: {accuracy:.4f}")
+        training_history["loss"].append(running_loss / len(train_loader))
+        training_history["train_acc"].append(accuracy)
 
         # validation after each epoch
-        validate(model, val_loader, model_wrapper.device)
+        val_acc = validate(model, val_loader, model_wrapper.device)
+        training_history["val_acc"].append(val_acc)
 
     # save model
     if save_model:
@@ -85,6 +88,7 @@ def fine_tune(
         model_wrapper.processor.save_pretrained("finetuned_food101_siglip")
         print("Model saved to: finetuned_food101_siglip")
 
+    return training_history
 
 def validate(model, loader, device):
     model.eval()
