@@ -14,7 +14,7 @@ src_dir = os.path.join(current_dir, os.pardir)
 project_root = os.path.join(src_dir, os.pardir)
 
 # DPID Executable Path
-dpid_exe_path = os.path.join(project_root, "dpid", "dpid.exe")
+dpid_exe_path = os.path.join(project_root, "dpid_windows_amd64.exe")
 
 # SAID Paths
 said_dir = os.path.join(project_root, "SAID")

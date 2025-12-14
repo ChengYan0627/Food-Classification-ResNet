@@ -24,13 +24,20 @@ This project implements an image classification pipeline focused on food images 
 │  ├─ plot.py                # Plotting helper function
 │  └─ project_utils.py       # Useful functions for calculating metrics and preprocessing
 │
+├─ SAID                      # The repo needed for SAID algorithm in downscaling cloned from: https://github.com/crhuang321/SAID 
+│
 ├─ project.ipynb             # Notebook with experiments
+│  dpid_windows_amd64.exe    # The executable file needed for DPID algorithm in downscaling from: https://github.com/Mishini/dpid/releases/tag/v1.2
 │  proposal.pdf              # Project proposal
 └─ README.md                 # This file
 ```
 
 
-## How to run
+## How to run 
+
+Check:
+1. Subrepo SAID from https://github.com/crhuang321/SAID is cloned under the correct file path.
+2. The executable file dpid_windows_amd64.exe from https://github.com/Mishini/dpid/releases/tag/v1.2 is downloaded and saved under the correct file path.
 
 In Jupyter Notebook:
 
