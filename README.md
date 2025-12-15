@@ -3,6 +3,8 @@
 
 This project implements an image classification pipeline focused on food images (based on the Food-101 dataset and a [pre-trained Siglip model](https://huggingface.co/prithivMLmods/Food-101-93M)). It contains preprocessing algorithms (low-light correction, deblurring, downscaling), a model wrapper for inference and evaluation, and a simple trainer for fine-tuning.
 
+Latest version is in the main branch.
+
 ## Project structure
 
 ```
@@ -29,6 +31,7 @@ This project implements an image classification pipeline focused on food images 
 ├─ project.ipynb             # Notebook with experiments
 │  dpid_windows_amd64.exe    # The executable file needed for DPID algorithm in downscaling from: https://github.com/Mishini/dpid/releases/tag/v1.2
 │  proposal.pdf              # Project proposal
+│  report.pdf                # Final report
 └─ README.md                 # This file
 ```
 
