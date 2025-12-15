@@ -3,7 +3,7 @@
 
 This project implements an image classification pipeline focused on food images (based on the Food-101 dataset and a [pre-trained Siglip model](https://huggingface.co/prithivMLmods/Food-101-93M)). It contains preprocessing algorithms (low-light correction, deblurring, downscaling), a model wrapper for inference and evaluation, and a simple trainer for fine-tuning.
 
-Latest version is in the main branch.
+The Latest version is in the main branch.
 
 ## Project structure
 
