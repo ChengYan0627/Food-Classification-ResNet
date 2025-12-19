@@ -10,7 +10,6 @@ The Latest version is in the main branch.
 
 Experiments are conducted in four phases: baseline evaluation on degraded images, individual preprocessing evaluation, exhaustive preprocessing combination search, and direct model fine-tuning.
 Results show that classical preprocessing provides limited gains, while fine-tuning the SigLIP model significantly improves robustness to real-world degradations.
-## Experimental Pipeline
 ![Pipeline](pipeline.png)
 
 
