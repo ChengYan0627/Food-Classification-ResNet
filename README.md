@@ -1,5 +1,5 @@
 # ECE253 — Food Image Classification
-## By Vincent Kao, Cheng-Yan Juang, Tien-Hao Chen
+## By Cheng-Yan Juang, Vincent Kao, Tien-Hao Chen
 
 This project implements an image classification pipeline focused on food images, using the Food-101 dataset and a pre-trained SigLIP model.
 The main goal is to evaluate how classical image preprocessing techniques (low-light enhancement, deblurring, and downscaling) compare with direct model fine-tuning when handling real-world image degradations. It contains preprocessing algorithms (low-light correction, deblurring, downscaling), a model wrapper for inference and evaluation, and a simple trainer for fine-tuning.
