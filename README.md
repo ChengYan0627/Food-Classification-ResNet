@@ -1,9 +1,16 @@
 # ECE253 — Food Image Classification
 ## By Vincent Kao, Cheng-Yan Juang, Tien-Hao Chen
 
-This project implements an image classification pipeline focused on food images (based on the Food-101 dataset and a [pre-trained Siglip model](https://huggingface.co/prithivMLmods/Food-101-93M)). It contains preprocessing algorithms (low-light correction, deblurring, downscaling), a model wrapper for inference and evaluation, and a simple trainer for fine-tuning.
+This project implements an image classification pipeline focused on food images, using the Food-101 dataset and a pre-trained SigLIP model.
+The main goal is to evaluate how classical image preprocessing techniques (low-light enhancement, deblurring, and downscaling) compare with direct model fine-tuning when handling real-world image degradations. It contains preprocessing algorithms (low-light correction, deblurring, downscaling), a model wrapper for inference and evaluation, and a simple trainer for fine-tuning.
 
 The Latest version is in the main branch.
+
+## Experimental Overview
+
+Experiments are conducted in four phases: baseline evaluation on degraded images, individual preprocessing evaluation, exhaustive preprocessing combination search, and direct model fine-tuning.
+Results show that classical preprocessing provides limited gains, while fine-tuning the SigLIP model significantly improves robustness to real-world degradations.
+
 
 ## Project structure
 
